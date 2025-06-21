@@ -1,2 +1,4 @@
 # Email
 Projeto de servidor e cliente de email utilizando: REST
+  Arquivo servidorEmailAPI.js é o arquivo do servidor que ira tratar e responder as requisições dos clientes, esta desenvolvido em node.js e express, para rodar este arquivo é necessario ter o node.js instalado na maquina e seguir os passos de inicialização (na pasta do arquivo no cmd 'npm init -y', depois 'npm install express cors bcryptjs jsonwebtoken', depois entra na pasta em que esta o arquivo caso haja uma mais interna e inicia o servidor com 'node servidorEmailAPI.js' se tudo estiver correto ele indicara que esta rodando na porta 3000).
+  Arquivo admin.html nada mais é que um painel que contem e mostra informações de dados que estão correndo no servidor (usuarios logados, usuarios cadastrados, rascunhos cadastrados e email cadastrado)
