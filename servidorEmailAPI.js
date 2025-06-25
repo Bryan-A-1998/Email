@@ -1,4 +1,4 @@
-// server/app.js
+// servidor Email API
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
@@ -20,133 +20,333 @@ let usuariosLogados = [];
 function autenticarToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
-  
+  req.token = token;
+
+  // Exibe o header Authorization no console
+  console.log(req.headers['authorization']);
+
   if (!token) {
-    return res.status(401).json({ erro: 'Token ausente' });
+    return res.status(401).json({ mensagem: 'Acesso negado', erro: 'Token ausente' });
   }
 
   // Verifica se o token foi invalidado (usuário fez logout)
   if (tokensInvalidos.includes(token)) {
-    return res.status(403).json({ erro: 'Token inválido. O usuário está offline ou já fez logout.' });
+    return res.status(400).json({ mensagem: 'Erro na requisição', erro: 'Token inválido. O usuário está offline ou já fez logout.' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, usuario) => {
-    if (err) {
-      return res.status(403).json({ erro: 'Token expirado ou inválido' });
+  jwt.verify(token, JWT_SECRET, (erro, payload) => {
+    if (erro) {
+      try {
+        const payloadDecodificado = jwt.decode(token);
+        const idExpulso = parseInt(payloadDecodificado?.id, 10);
+    
+        if (idExpulso && !isNaN(idExpulso)) {
+          usuariosLogados = usuariosLogados.filter(u => u.id !== idExpulso);
+        }
+      } catch (decodeError) {
+        console.warn('Erro ao tentar remover usuário com token inválido:', decodeError);
+      }
+    
+      return res.status(400).json({ mensagem: 'Erro na requisição', erro: 'Token expirado ou inválido' });
     }
 
-    req.usuario = usuario;
+    const id = parseInt(payload.id, 10);
+    if (!Number.isInteger(id) || id < 1 || id > 100000) {
+      return res.status(500).json({ mensagem: 'Erro na requisição', erro: 'ID inválido no token' });
+    }
+
+    const usuarioDados = usuarios.find(u => u.id === id);
+    if (!usuarioDados) {
+      return res.status(404).json({ mensagem: 'Erro na requisição', erro: 'Usuário não encontrado' });
+    }
+
+    req.usuario = {
+      id: id,
+      email: usuarioDados.email,
+      nome: usuarioDados.nome
+    };
+
     next();
   });
+}
+
+function validarCamposUsuario({ nome, email, senha }) {
+  const erro = [];
+
+  // Validação do nome
+  if (nome !== undefined) {
+    if (typeof nome !== 'string' || nome.trim() === '' || nome.length > 255) {
+      erro.push('Nome deve ser uma string entre 1 e 255 caracteres.');
+    }
+  }
+
+  // Validação do email
+  if (email !== undefined) {
+    const regexEmail = /^[\w\-\.]+@([\w\-]+\.)+[\w\-]{2,4}$/;
+    if (typeof email !== 'string' || email.trim() === '' || !regexEmail.test(email)) {
+      erro.push('Email inválido.');
+    }
+  }
+
+  // Validação da senha
+  if (senha !== undefined) {
+    if (typeof senha !== 'string' || senha.length < 8 || senha.length > 20) {
+      erro.push('Senha deve ter entre 8 e 20 caracteres.');
+    }
+  }
+
+  // Rejeita se nenhum campo foi enviado (útil no PUT)
+  if (nome === undefined && email === undefined && senha === undefined) {
+    erro.push('Envie ao menos um campo para atualizar.');
+  }
+
+  return erro;
+}
+
+function validarCamposRascunho({ assunto, emailDestinatario, corpo }) {
+  const erro = [];
+
+  const assuntoPreenchido = assunto !== undefined && assunto !== null && assunto.toString().trim() !== '';
+  const corpoPreenchido = corpo !== undefined && corpo !== null && corpo.toString().trim() !== '';
+  const emailPreenchido = emailDestinatario !== undefined && emailDestinatario !== null && emailDestinatario.toString().trim() !== '';
+
+  if (assuntoPreenchido) {
+    if (typeof assunto !== 'string' || assunto.length < 1 || assunto.length > 255) {
+      erro.push('Assunto deve ter entre 1 e 255 caracteres.');
+    }
+  }
+
+  if (emailPreenchido) {
+    const regexEmail = /^[\w\-\.]+@([\w\-]+\.)+[\w\-]{2,4}$/;
+    if (typeof emailDestinatario !== 'string' || !regexEmail.test(emailDestinatario)) {
+      erro.push('Email do destinatário inválido.');
+    }
+  }
+
+  if (corpoPreenchido) {
+    if (typeof corpo !== 'string') {
+      erro.push('Corpo do email deve ser um texto.');
+    }
+  }
+  if (!assuntoPreenchido && !corpoPreenchido && !emailPreenchido) {
+    erro.push('Pelo menos um dos campos (assunto, destinatário ou corpo) deve ser preenchido.');
+  }
+
+  return erro;
+}
+
+function validarCamposEmail({ assunto, emailDestinatario, corpo }) {
+  const erro = [];
+
+  if (typeof assunto !== 'string' || assunto.trim().length < 1 || assunto.length > 255) {
+    erro.push('Assunto é obrigatório e deve ter entre 1 e 255 caracteres.');
+  }
+
+  const regexEmail = /^[\w\-\.]+@([\w\-]+\.)+[\w\-]{2,4}$/;
+  if (typeof emailDestinatario !== 'string' || !regexEmail.test(emailDestinatario)) {
+    erro.push('Email do destinatário é obrigatório e deve ser válido.');
+  }
+
+  if (typeof corpo !== 'string' || corpo.trim() === '') {
+    erro.push('Corpo do email é obrigatório e deve ser um texto.');
+  }
+
+  return erro;
 }
 
 // Rotas
 // Rotas de usuários
 // Cadastro de usuário
-app.post('/usuarios', async (req, res) => {
+app.post('/api/usuarios', async (req, res) => {
   const { nome, email, senha } = req.body;
-  if (!nome || !email || !senha) return res.status(400).json({ erro: 'Preencha todos os campos' });
+  const erros = validarCamposUsuario({ nome, email, senha });
+  if (erros.length > 0) return res.status(400).json({ 
+    mensagem: 'Erro na requisição',
+    erro: erros.join('\n') });
+  
+  //if (!nome || !email || !senha) return res.status(400).json({ erro: 'Preencha todos os campos' });
 
   const existe = usuarios.find(u => u.email === email);
   if (existe) return res.status(400).json({ mensagem: 'Erro na requisição', erro: 'Email já cadastrado' });
 
   const senha_hash = await bcrypt.hash(senha, 10);
-  const id = usuarios.length + 1;
+
+  const id = usuarios.length === 0 
+  ? 1 
+  : Math.max(...usuarios.map(u => u.id)) + 1;
+  
   usuarios.push({ id, nome, email, senha_hash });
-  res.status(201).json({ mensagem: 'Sucesso ao cadastrar usuário', usuario: {id: id, nome: nome, email: email } });
+
+  res.status(201).json({ mensagem: 'Sucesso ao cadastrar usuário' });
+
+//  res.status(201).json({ mensagem: 'Sucesso ao cadastrar usuário', usuario: {id: id, nome: nome, email: email } });
 });
 
 // Login de usuário
-app.post('/login', async (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { email, senha } = req.body;
   const usuario = usuarios.find(u => u.email === email);
-  if (!usuario) return res.status(400).json({ mensagem: 'Erro na requisição', erro: 'Usuário não encontrado' });
+  if (!usuario) return res.status(404).json({ mensagem: 'Usuário não encontrado' });
 
   const senha_valida = await bcrypt.compare(senha, usuario.senha_hash);
-  if (!senha_valida) return res.status(401).json({ mensagem: 'Erro na requisição', erro: 'Senha incorreta' });
+  if (!senha_valida) return res.status(400).json({ mensagem: 'Erro na requisição', erro: 'Senha incorreta' });
 
-  const token = jwt.sign({ id: usuario.id, email: usuario.email }, JWT_SECRET, { expiresIn: '1h' });
+//  const token = jwt.sign({ id: usuario.id, email: usuario.email }, JWT_SECRET, { expiresIn: '1h' });
+//  console.log("Usuários logados:", usuariosLogados); // nao esta na lista
+
+const idUsuario = parseInt(usuario.id);
+
+if (!Number.isInteger(idUsuario) || idUsuario < 1 || idUsuario > 100000) {
+  return res.status(500).json({ mensagem: 'Erro interno', erro: 'ID de usuário inválido para o token' });
+}
+
+const token = jwt.sign({ id: idUsuario }, JWT_SECRET, { expiresIn: '4h' });
   
-  // Adiciona usuário logado (se ainda não estiver)
-  const jaLogado = usuariosLogados.find(u => u.id === usuario.id);
+// Adiciona usuário logado (se ainda não estiver)
+const jaLogado = usuariosLogados.find(u => u.email === usuario.email);
   if (!jaLogado) {
-    usuariosLogados.push({ id: usuario.id, nome: usuario.nome, email: usuario.email });
-    console.log("Usuários logados:", usuariosLogados);
+    usuariosLogados.push({
+      id: usuario.id,
+      nome: usuario.nome,
+      email: usuario.email
+    });
   }
-  res.status(200).json({ mensagem: 'Sucesso ao realizar login', usuario: {id: usuario.id, nome: usuario.nome, email: usuario.email}, token: token});
+  res.status(200).json({ mensagem: 'Sucesso ao realizar login', token: token});
+
+//  res.status(200).json({ mensagem: 'Sucesso ao realizar login', usuario: {id: usuario.id, nome: usuario.nome, email: usuario.email}, token: token});
 });
 
 // Rotas de usuários autenticados
 // Logout de usuário
-app.post('/logout', autenticarToken, (req, res) => {
+app.post('/api/logout', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (token && !tokensInvalidos.includes(token)) {
+    tokensInvalidos.push(token);
+  }
+
+  try {
+    const payloadDecodificado = jwt.decode(token);
+    const id = parseInt(payloadDecodificado?.id, 10);
+
+    if (id && !isNaN(id)) {
+      usuariosLogados = usuariosLogados.filter(u => u.id !== id);
+    }
+  } catch (decodeError) {
+    console.warn('Falha ao remover usuário de usuariosLogados no logout:', decodeError);
+  }
+
+  res.status(200).json({ mensagem: 'Logout realizado com sucesso' });
+});
+
+/*app.post('/api/logout', autenticarToken, (req, res) => {
+  const token = req.token;
+
+  if (token && !tokensInvalidos.includes(token)) {
+    tokensInvalidos.push(token);
+  }
+  
+  usuariosLogados = usuariosLogados.filter(u => u.id !== req.usuario?.id);
+
+  res.status(200).json({ mensagem: 'Logout realizado com sucesso'});
+});
+*/
+
+// Lista de usuários logados
+// Dados do usuário
+app.get('/api/usuarios', autenticarToken, (req, res) => {
+  const usuario = usuarios.find(u => u.id === req.usuario.id);
+  //if (!usuario) return res.status(404).json({ erro: 'Usuário não encontrado' });
+
+  res.status(200).json({mensagem: 'Sucesso ao buscar usuario', usuario: { nome: usuario.nome, email: usuario.email } });
+
+  //res.status(200).json({mensagem: 'Sucesso ao buscar usuario', usuario: {id: usuario.id, nome: usuario.nome, email: usuario.email } });
+});
+
+// Atualização de dados do usuário
+app.put('/api/usuarios', autenticarToken, async (req, res) => {
+  const { nome, senha } = req.body;
+  
+  const erros = validarCamposUsuario({ nome, senha });
+  if (erros.length > 0) return res.status(400).json({ 
+    mensagem: 'Erro na requisição',
+    erro: erros.join('\n') });
+
+  const usuario = usuarios.find(u => u.id === req.usuario.id);
+  //if (!usuario) return res.status(404).json({ erro: 'Usuário não encontrado' });
+
+  if (nome) usuario.nome = nome;
+  if (senha) usuario.senha_hash = await bcrypt.hash(senha, 10);
+
+  res.status(200).json({mensagem: 'Sucesso ao atualizar usuario', usuario: {nome: usuario.nome, email: usuario.email } });
+});
+
+// Remoção de usuário
+app.delete('/api/usuarios', autenticarToken, (req, res) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   if (token) tokensInvalidos.push(token);
   usuariosLogados = usuariosLogados.filter(u => u.id !== req.usuario.id);
-  res.status(200).json({ mensagem: 'Logout realizado com sucesso'});
-});
-
-// Dados do usuário
-app.get('/usuarios', autenticarToken, (req, res) => {
-  const usuario = usuarios.find(u => u.id === req.usuario.id);
-  if (!usuario) return res.status(404).json({ erro: 'Usuário não encontrado' });
-  res.status(200).json({mensagem: 'Sucesso ao buscar usuario', usuario: {id: usuario.id, nome: usuario.nome, email: usuario.email } });
-});
-
-// Atualização de dados do usuário
-app.put('/usuarios', autenticarToken, async (req, res) => {
-  const { nome, email, senha } = req.body;
-  const usuario = usuarios.find(u => u.id === req.usuario.id);
-  if (!usuario) return res.status(404).json({ erro: 'Usuário não encontrado' });
-
-  if (nome) usuario.nome = nome;
-  if (email) usuario.email = email;
-  if (senha) usuario.senha_hash = await bcrypt.hash(senha, 10);
-
-  res.status(200).json({mensagem: 'Sucesso ao salvar usuario', usuario: {id: usuario.id, nome: usuario.nome, email: usuario.email } });
-});
-
-// Remoção de usuário
-app.delete('/usuarios', autenticarToken, (req, res) => {
-  if (token) tokensInvalidos.push(token);
   usuarios = usuarios.filter(u => u.id !== req.usuario.id);
-  emails = emails.filter(e => e.remetente_id !== req.usuario.id);
-  rascunhos = rascunhos.filter(r => r.remetente_id !== req.usuario.id);
+    // apaga emails que tem relacionamento quando excluir usuario
+  //  emails = emails.filter(e => e.remetente_id !== req.usuario.id);
+    // apaga racunhos que tem relacionamento quando excluir usuario
+  //  rascunhos = rascunhos.filter(r => r.remetente_id !== req.usuario.id);
   res.status(200).json({mensagem: 'Sucesso ao excluir usuario'});
 });
 
 // Rotas de rascunhos
 // Criação de rascunho
-app.post('/rascunhos', autenticarToken, (req, res) => {
+app.post('/api/rascunhos', autenticarToken, (req, res) => {
   const { assunto, emailDestinatario, corpo } = req.body;
 
-  if (!assunto && !emailDestinatario && !corpo) {
-    return res.status(400).json({ erro: 'Preencha ao menos um campo (assunto, emailDestinatario ou corpo)' });
+  const erros = validarCamposRascunho({ assunto, emailDestinatario, corpo });
+  if (erros.length > 0) {
+    return res.status(400).json({ mensagem: 'Erro na requisição',
+      erro: erros.join('\n')  });
   }
 
-  const rascunhoId = rascunhos.length + 1;
+  const rascunhoId = rascunhos.length === 0 
+  ? 1 
+  : Math.max(...rascunhos.map(u => u.rascunhoId)) + 1;
 
   const novo = {
-    rascunhoId,
+    rascunhoId: rascunhoId,
     remetente_id: req.usuario.id,
     assunto: assunto || '',
     emailDestinatario: emailDestinatario || '',
     corpo: corpo || '',
-    data_hora: new Date().toISOString()
+    dataEnvio: new Date().toISOString()
   };
 
   rascunhos.push(novo);
-  res.status(200).json({ mensagem: 'Rascunho criado', rascunho: novo });
+  res.status(200).json({ mensagem: 'Rascunho criado', rascunho: { 
+    rascunhoId: novo.rascunhoId, 
+    emailDestinatario: novo.emailDestinatario,
+    assunto: novo.assunto, 
+    corpo: novo.corpo} });
 });
 
 // Listagem de rascunhos
-app.get('/rascunhos', autenticarToken, (req, res) => {
+app.get('/api/rascunhos', autenticarToken, (req, res) => {
   const meus = rascunhos.filter(r => r.remetente_id === req.usuario.id);
-  res.status(200).json({mensagem: 'Rascunho localizado', rascunhos: meus});
+  //console.log('Rascunhos retornados para:', req.usuario.email, meus);
+    const rascunhosFiltrados = meus.map(r => ({
+      rascunhoId: r.rascunhoId,
+      emailDestinatario: r.emailDestinatario,
+      assunto: r.assunto,
+      corpo: r.corpo
+    }));
+  
+    res.status(200).json({
+      mensagem: 'Rascunhos localizados',
+      rascunhos: rascunhosFiltrados
+    });
 });
 
 // Retorno de rascunho específico
-app.get('/rascunhos/:id', autenticarToken, (req, res) => {
+app.get('/api/rascunhos/:id', autenticarToken, (req, res) => {
   const id = parseInt(req.params.id);
   const rascunho = rascunhos.find(r => r.rascunhoId === id && r.remetente_id === req.usuario.id);
 
@@ -154,16 +354,23 @@ app.get('/rascunhos/:id', autenticarToken, (req, res) => {
     return res.status(404).json({ mensagem: 'Rascunho não encontrado' });
   }
 
-  res.status(200).json({mensagem: 'Rascunho localizado', rascunho: rascunho});
+  res.status(200).json({mensagem: 'Rascunho localizado', rascunho: { 
+    rascunhoId: rascunho.rascunhoId, 
+    emailDestinatario: rascunho.emailDestinatario,
+    assunto: rascunho.assunto, 
+    corpo: rascunho.corpo}});
 });
 
 // Atualização de rascunho
-app.put('/rascunhos/:id', autenticarToken, (req, res) => {
+app.put('/api/rascunhos/:id', autenticarToken, (req, res) => {
   const id = parseInt(req.params.id);
   const { assunto, emailDestinatario, corpo } = req.body;
 
-  if (!assunto && !emailDestinatario && !corpo) {
-    return res.status(400).json({ erro: 'Informe ao menos um campo para atualizar' });
+  const erros = validarCamposRascunho({ assunto, emailDestinatario, corpo });
+  if (erros.length > 0) {
+    return res.status(400).json({ 
+      mensagem: 'Erro na requisição',
+      erro: erros.join('\n')  });
   }
 
   const rascunho = rascunhos.find(r => r.rascunhoId === id && r.remetente_id === req.usuario.id);
@@ -173,13 +380,17 @@ app.put('/rascunhos/:id', autenticarToken, (req, res) => {
   if (emailDestinatario) rascunho.emailDestinatario = emailDestinatario;
   if (corpo) rascunho.corpo = corpo;
 
-  rascunho.data_hora = new Date().toISOString(); // Atualiza horário
+  rascunho.dataEnvio = new Date().toISOString(); // Atualiza horário
 
-  res.status(200).json({ mensagem: 'Rascunho salvo com sucesso', rascunho: rascunho });
+  res.status(200).json({ mensagem: 'Rascunho salvo com sucesso', rascunho: { 
+    rascunhoId: rascunho.rascunhoId, 
+    emailDestinatario: rascunho.emailDestinatario,
+    assunto: rascunho.assunto, 
+    corpo: rascunho.corpo}});
 });
 
 // Remoção de rascunho
-app.delete('/rascunhos/:id', autenticarToken, (req, res) => {
+app.delete('/api/rascunhos/:id', autenticarToken, (req, res) => {
   const id = parseInt(req.params.id);
   const index = rascunhos.findIndex(r => r.rascunhoId === id && r.remetente_id === req.usuario.id);
 
@@ -191,93 +402,161 @@ app.delete('/rascunhos/:id', autenticarToken, (req, res) => {
 
 // Rotas de emails
 // Envio ou resposta de email
-app.post('/emails', autenticarToken, (req, res) => {
-  const { rascunho_id, resposta_de_id } = req.body;
+app.post('/api/emails', autenticarToken, (req, res) => {
+  //const { rascunho_id, resposta_de_id } = req.body;
+  const { assunto, emailDestinatario, corpo } = req.body;
+  const erros = validarCamposEmail({ assunto, emailDestinatario, corpo });
 
-  const rascunho = rascunhos.find(r => r.rascunhoId === rascunho_id && r.remetente_id === req.usuario.id);
-  if (!rascunho) return res.status(404).json({ erro: 'Rascunho não encontrado' });
-
-  if (!rascunho.emailDestinatario || !rascunho.corpo) {
-    return res.status(400).json({ erro: 'Para enviar, o rascunho deve conter emailDestinatario e corpo' });
+  if (erros.length > 0) {
+    return res.status(400).json({ 
+      mensagem: 'Erro na requisição',
+      erro: erros.join('\n')  });
   }
 
-  let corpoFinal = rascunho.corpo;
+  const email_id = emails.length === 0 
+  ? 1 
+  : Math.max(...emails.map(u => u.emailId)) + 1;
 
-  // Se for resposta, buscar o email original
-  if (resposta_de_id) {
-    const idResposta = parseInt(resposta_de_id);
-    console.log("Buscando email original com ID:", idResposta);
-    console.log("Usuário logado:", req.usuario.email);
-
-    const emailOriginal = emails.find(e =>
-      e.emailId === idResposta &&
-      e.emailDestinatario === req.usuario.email // Email precisa ter sido recebido por esse usuário
-    );  
-
-    console.log("Email original encontrado?", emailOriginal);
-
-    if (!emailOriginal) return res.status(404).json({ erro: 'Email original para resposta não encontrado' });
-
-    corpoFinal += `\n\n--- Resposta ao email original ---\n${emailOriginal.corpo}`;
-  }
-
-  const novoEmail = {
-    emailId: emails.length + 1,
+  const novoEmail = {    
+    emailId: email_id,
     remetente_id: req.usuario.id,
     emailRemetente: req.usuario.email,
-    emailDestinatario: rascunho.emailDestinatario,
-    assunto: rascunho.assunto || '',
-    corpo: corpoFinal,
+    emailDestinatario: emailDestinatario,
+    assunto: assunto,
+    corpo: corpo,
     status: 'enviado',
-    data_hora: new Date().toISOString(),
-    resposta_de_id: resposta_de_id || null
+    dataEnvio: new Date().toISOString(),
+    //resposta_de_id: resposta_de_id || null
   };
 
   emails.push(novoEmail);
- // rascunhos = rascunhos.filter(r => r.rascunhoId !== rascunho_id); // detelta o rascunho utilizado de rascunhos
 
-  res.status(200).json({ mensagem: 'Email enviado com sucesso', email: novoEmail });
+  res.status(200).json({ mensagem: 'Novo email enviado com sucesso', email: {
+    emailId: novoEmail.emailId, 
+    emailDestinatario: novoEmail.emailDestinatario,
+    emailRemetente: novoEmail.emailRemetente, 
+    status: novoEmail.status,    
+    assunto: novoEmail.assunto, 
+    corpo: novoEmail.corpo, 
+    dataEnvio: new Date(novoEmail.dataEnvio).toLocaleDateString('pt-BR')
+    } });
 });
 
-// Atualização deemail marcar como lido
-app.put('/emails/:id', autenticarToken, (req, res) => {
+// Atualização de email marcar como lido não utilizado
+app.put('/api/emails/:id', autenticarToken, (req, res) => {
   const id = parseInt(req.params.id);
   const email = emails.find(e => e.emailId === id && e.emailDestinatario === req.usuario.email);
   if (!email) return res.status(404).json({ erro: 'Email não encontrado' });
 
   email.status = 'lido';
-  res.status(200).json({ mensagem: 'Email marcado como lido', email: email });
+  res.status(200).json({ mensagem: 'Email marcado como lido', email: {
+    emailId: email.emailId, emailDestinatario: email.emailDestinatario,
+    emailRemetente: email.emailRemetente, status: email.status,
+    assunto: email.assunto, corpo: email.corpo, dataEnvio: new Date(email.dataEnvio).toLocaleDateString('pt-BR')
+    } });
 });
 
+// Envio ou resposta de email//ID id do rascunho
+app.post('/api/emails/:id', autenticarToken, (req, res) => {
+  const id = parseInt(req.params.id);
+  const rascunho = rascunhos.find(r => r.rascunhoId === id && r.remetente_id === req.usuario.id);
+  if (!rascunho) return res.status(404).json({ erro: 'Rascunho não encontrado' });
 
-// Retorno de email específico
-app.get('/emails/:id', autenticarToken, (req, res) => {
+  if (!rascunho.emailDestinatario || !rascunho.corpo || !rascunho.assunto) {
+    return res.status(400).json({ erro: 'Para enviar, o rascunho deve conter emailDestinatario, assunto e corpo' });
+  }
+
+  let corpoFinal = rascunho.corpo;
+
+  const email_id = emails.length === 0 
+  ? 1 
+  : Math.max(...emails.map(u => u.emailId)) + 1;
+
+  const novoEmail = {    
+    emailId: email_id,
+    remetente_id: req.usuario.id,
+    emailRemetente: req.usuario.email,
+    emailDestinatario: rascunho.emailDestinatario,
+    assunto: rascunho.assunto,
+    corpo: corpoFinal,
+    status: 'enviado',
+    dataEnvio: new Date().toISOString(),
+//    resposta_de_id: resposta_de_id || null
+  };
+
+  emails.push(novoEmail);
+  rascunhos = rascunhos.filter(r => r.rascunhoId !== id); // detelta o rascunho utilizado de rascunhos
+
+  res.status(200).json({ mensagem: 'Email enviado de rascunho com sucesso', email: {
+    emailId: novoEmail.emailId, 
+    emailDestinatario: novoEmail.emailDestinatario,
+    emailRemetente: novoEmail.emailRemetente, 
+    status: novoEmail.status,
+    assunto: novoEmail.assunto, 
+    corpo: novoEmail.corpo, 
+    dataEnvio: new Date(novoEmail.dataEnvio).toLocaleDateString('pt-BR')
+    } });
+});
+
+// Retorno de email específico e marca como lido
+app.get('/api/emails/:id', autenticarToken, (req, res) => {
   const id = parseInt(req.params.id);
   const email = emails.find(e => e.emailId === id);
 
   if (!email) {
     return res.status(404).json({ erro: 'Email não encontrado' });
   } else if (email.emailDestinatario !== req.usuario.email) {
-    return res.status(403).json({ erro: 'Você não tem permissão para acessar este email' });  }
+    return res.status(400).json({ mensagem: 'Erro na requisição', erro: 'Você não tem permissão para acessar este email' });  }
 
-  res.status(200).json({mensagem: 'Email encontrado', email: email});  
+  email.status = 'lido';
+
+  res.status(200).json({mensagem: 'Email encontrado', email: {
+    emailId: email.emailId, 
+    emailDestinatario: email.emailDestinatario,
+    emailRemetente: email.emailRemetente, 
+    status: email.status,
+    assunto: email.assunto, 
+    corpo: email.corpo, 
+    dataEnvio: new Date(email.dataEnvio).toLocaleDateString('pt-BR')
+    }});  
 });
 
 // Retorno de todos os emails buscando por token
-app.get('/emails', autenticarToken, (req, res) => {
+app.get('/api/emails', autenticarToken, (req, res) => {
   const emailsDoUsuario = emails.filter(e => e.emailRemetente === req.usuario.email || e.emailDestinatario === req.usuario.email);
-  res.status(200).json({ mensagem: 'Emails Encontrados', emails: emailsDoUsuario});
+  
+  const emailsRecebidos = emailsDoUsuario.map(e => ({
+    emailId: e.emailId, 
+    emailDestinatario: e.emailDestinatario,
+    emailRemetente: e.emailRemetente, 
+    status: e.status,
+    assunto: e.assunto, 
+    corpo: e.corpo, 
+    dataEnvio: new Date(e.dataEnvio).toLocaleDateString('pt-BR')
+  }));  
+  
+  res.status(200).json({ mensagem: 'Emails Encontrados', emails: emailsRecebidos});
 });
 
 // Remoção de email
-app.delete('/emails/:id', autenticarToken, (req, res) => {
+app.delete('/api/emails/:id', autenticarToken, (req, res) => {
   const id = parseInt(req.params.id);
   const index = emails.findIndex(e => e.emailId === id && e.remetente_id === req.usuario.id);
 
   if (index === -1) return res.status(404).json({ erro: 'Email não encontrado' });
 
+  const emailsCliente = emails.map(e => ({
+    emailId: e.emailId, 
+    emailDestinatario: e.emailDestinatario,
+    emailRemetente: e.emailRemetente, 
+    status: e.status,
+    assunto: e.assunto, 
+    corpo: e.corpo, 
+    dataEnvio: new Date(e.dataEnvio).toLocaleDateString('pt-BR')
+  }));  
+
   emails.splice(index, 1);
-  res.status(200).json({ mensagem: 'Email removido com sucesso', emails: emails });
+  res.status(200).json({ mensagem: 'Email removido com sucesso', emails: emailsCliente });
 });
 
 // Listagem de emails enviados pelo usuário
@@ -319,7 +598,7 @@ app.get('/admin/logados', (req, res) => {
 });
 
 // SERVIDOR RODANDO NA PORTA 3000
-app.listen(3000, () => console.log('Servidor rodando na porta 3000'));
+app.listen(22777, () => console.log('Servidor rodando na porta 22777'));
 
 const path = require('path');
 
